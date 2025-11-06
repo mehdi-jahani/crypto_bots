@@ -5,6 +5,9 @@ CoinEx Live Trading Bot - FINAL CORRECTED VERSION
 This version provides the definitive fix for the 'invalid argument' error by adding
 the mandatory 'market_type' parameter to the POST request body for placing orders,
 as required by the official CoinEx V2 documentation.
+
+New Feature:
+- Integrated Telegram logging to send real-time updates to a specified channel.
 """
 
 import pandas as pd
@@ -18,10 +21,53 @@ import hashlib
 import hmac
 from datetime import datetime
 
+
+# ==============================================================================
+# 0. TELEGRAM LOGGING HANDLER (NEW)
+# ==============================================================================
+class TelegramLogHandler(logging.Handler):
+    """
+    A custom logging handler that sends log records to a Telegram channel.
+    It is designed to be robust and not crash the main application if
+    sending a message to Telegram fails.
+    """
+
+    def __init__(self, token, chat_id):
+        super().__init__()
+        self.token = token
+        self.chat_id = chat_id
+        self.url = f"https://api.telegram.org/bot{self.token}/sendMessage"
+
+    def emit(self, record):
+        """
+        Formats the log record and sends it to the Telegram chat.
+        """
+        log_entry = self.format(record)
+
+        # Add emojis for better visual distinction in the Telegram channel
+        if record.levelno >= logging.CRITICAL:
+            log_entry = f"💥 CRITICAL 💥\n{log_entry}"
+        elif record.levelno >= logging.ERROR:
+            log_entry = f"🚨 ERROR 🚨\n{log_entry}"
+        elif record.levelno >= logging.WARNING:
+            log_entry = f"⚠️ WARNING ⚠️\n{log_entry}"
+        elif "successfully" in log_entry.lower():
+            log_entry = f"✅ SUCCESS ✅\n{log_entry}"
+
+        payload = {"chat_id": self.chat_id, "text": log_entry, "parse_mode": "Markdown"}
+        try:
+            # Use a timeout to avoid blocking the main thread for too long
+            requests.post(self.url, data=payload, timeout=5)
+        except Exception as e:
+            # Print the error to the console/file log but do not raise it
+            # This ensures the bot continues running even if Telegram is down.
+            print(f"CRITICAL: Could not send log message to Telegram. Error: {e}")
+
+
 # ==============================================================================
 # 1. CONFIGURATION
 # ==============================================================================
-TEST_MODE = False
+TEST_MODE = True
 
 ACCESS_ID = "3F631D0E06B946CF9248E8AC248A2A0C"
 SECRET_KEY = "0C4201BF0883E02C3970AE6081F879A6CCE5DF07831BC98D"
@@ -30,7 +76,7 @@ CONFIG = {
     "symbol": "BTCUSDT",
     "timeframe": "15min",
     "limit": 200,
-    "risk_amount_usdt": 0.04,
+    "risk_amount_usdt": 0.02,
     "rr_ratio": 3,
     "zone_tolerance": 0.003,
     "min_tests": 3,
@@ -45,14 +91,22 @@ CONFIG = {
     "swing_lookback": 2,
     "zone_entry_buffer": 0.001,
 }
+
+# --- BOT_CONFIG is updated with Telegram settings ---
 BOT_CONFIG = {
     "check_interval_seconds": 300,
     "state_file": "bot_state.json",
     "base_asset": "BTC",
     "quote_asset": "USDT",
     "min_order_value_usdt": 5.0,
+    # --- NEW: Telegram Logger Configuration ---
+    "telegram_enabled": True,  # Set to False to disable Telegram logging
+    "telegram_log_level": "INFO",  # Minimum level to send: DEBUG, INFO, WARNING, ERROR, CRITICAL
+    "telegram_bot_token": "8429441462:AAE-ZSwKDBK0AN6ek3XwNlN8JnDz9VhAw18",  # PASTE YOUR BOT TOKEN HERE
+    "telegram_channel_id": "@tsb1999",  # PASTE YOUR CHANNEL ID HERE (e.g., "@mychannel" or "-100123...")
 }
 
+# --- Setup base logging to file and console ---
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
@@ -61,6 +115,32 @@ logging.basicConfig(
         logging.StreamHandler(),
     ],
 )
+
+# --- NEW: Attach the custom Telegram handler to the root logger ---
+if BOT_CONFIG.get("telegram_enabled", False):
+    tg_token = BOT_CONFIG.get("telegram_bot_token")
+    tg_chat_id = BOT_CONFIG.get("telegram_channel_id")
+
+    # Check if the token and chat_id are filled and not default values
+    if tg_token and tg_chat_id and "YOUR_TELEGRAM" not in tg_token:
+        # Create an instance of our custom handler
+        telegram_handler = TelegramLogHandler(token=tg_token, chat_id=tg_chat_id)
+
+        # Set the minimum log level that this handler will process
+        log_level_str = BOT_CONFIG.get("telegram_log_level", "INFO").upper()
+        telegram_handler.setLevel(getattr(logging, log_level_str, logging.INFO))
+
+        # Set a simple format for Telegram messages (level and message)
+        formatter = logging.Formatter("%(levelname)s - %(message)s")
+        telegram_handler.setFormatter(formatter)
+
+        # Add the handler to the root logger
+        logging.getLogger().addHandler(telegram_handler)
+        logging.info("Telegram logger has been successfully activated.")
+    else:
+        logging.warning(
+            "Telegram logging is enabled, but token/chat_id is not properly configured. Skipping."
+        )
 
 
 # ==============================================================================
