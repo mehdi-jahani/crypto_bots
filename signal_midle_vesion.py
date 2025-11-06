@@ -1,1 +1,1 @@
-this repository is private
+this repository is privet
